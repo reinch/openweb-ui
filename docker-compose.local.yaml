@@ -9,11 +9,22 @@ services:
     environment:
       - WEBUI_SECRET_KEY=
       - ENABLE_OLLAMA_API=false
-      - OPENAI_API_BASE_URL=http://host.docker.internal:8001/v1
+      - OPENAI_API_BASE_URL=http://sdv-backend:8000/v1
       - OPENAI_API_KEY=not-needed
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    networks:
+      - default
+      - ai-platform
+
+networks:
+  default:
+    name: open-webui_default
+
+  ai-platform:
+    external: true
+    name: ai-platform_default
 
 volumes:
   open-webui-data:
