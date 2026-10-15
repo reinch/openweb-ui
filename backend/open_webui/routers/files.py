@@ -3,6 +3,7 @@ import errno
 import hashlib
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Optional: forward uploaded PDFs to the SDV RAG backend so they get
+# indexed into the shared Qdrant corpus. Disabled when SDV_INGEST_URL
+# is unset.
+SDV_INGEST_URL = os.getenv("SDV_INGEST_URL", "")
+SDV_INGEST_KEY = os.getenv("SDV_INGEST_KEY", "")
+
+
+def _forward_pdf_to_sdv_backend(contents: bytes, filename: str) -> None:
+    """Best-effort forward of a PDF upload to the SDV backend.
+
+    Runs in its own daemon thread; failures only log and never affect
+    the Open WebUI upload or its own RAG processing.
+    """
+    if not SDV_INGEST_URL:
+        return
+    try:
+        import urllib.request
+
+        boundary = uuid.uuid4().hex
+        body = b"".join(
+            (
+                f"--{boundary}\r\n".encode(),
+                b'Content-Disposition: form-data; name="file"; filename="'
+                + filename.encode("utf-8", "replace")
+                + b'"\r\n',
+                b"Content-Type: application/pdf\r\n\r\n",
+                contents,
+                f"\r\n--{boundary}--\r\n".encode(),
+            )
+        )
+        request = urllib.request.Request(
+            SDV_INGEST_URL,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "X-Ingest-Key": SDV_INGEST_KEY,
+            },
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            log.info("Forwarded %s to SDV backend (HTTP %s)", filename, response.status)
+    except Exception:
+        log.warning("Failed to forward %s to SDV backend", filename, exc_info=True)
 
 
 from open_webui.utils.access_control.files import has_access_to_file
@@ -431,6 +476,17 @@ async def upload_file_handler(
             channel = await Channels.get_channel_by_id_and_user_id(file_metadata['channel_id'], user.id, db=db)
             if channel:
                 await Channels.add_file_to_channel_by_id(channel.id, file_item.id, user.id, db=db)
+
+        # Forward PDFs to the external SDV RAG backend (if configured)
+        # so they are indexed into the shared corpus, independently of
+        # Open WebUI's own RAG processing.
+        if process and file_extension == 'pdf' and SDV_INGEST_URL and contents:
+            threading.Thread(
+                target=_forward_pdf_to_sdv_backend,
+                args=(contents, name),
+                daemon=True,
+                name=f'sdv-forward-{id}',
+            ).start()
 
         if process:
             if background_tasks and process_in_background:

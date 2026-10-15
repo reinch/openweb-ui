@@ -4,6 +4,8 @@ services:
     container_name: create-open-webui
     volumes:
       - open-webui-data:/app/backend/data
+      # Forked upload route: forwards PDFs to the SDV backend on upload
+      - ./backend/open_webui/routers/files.py:/app/backend/open_webui/routers/files.py:ro
     ports:
       - "3002:8080"
     environment:
@@ -11,6 +13,8 @@ services:
       - ENABLE_OLLAMA_API=false
       - OPENAI_API_BASE_URL=http://sdv-backend:8000/v1
       - OPENAI_API_KEY=not-needed
+      - SDV_INGEST_URL=http://sdv-backend:8000/internal/ingest
+      - SDV_INGEST_KEY=${SDV_INGEST_KEY}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
